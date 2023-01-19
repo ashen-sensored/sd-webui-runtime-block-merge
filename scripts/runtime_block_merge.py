@@ -2,7 +2,7 @@ import modules.scripts as scripts
 import gradio as gr
 
 from ldm.modules.diffusionmodules.openaimodel import UNetModel
-from modules import sd_models, shared
+from modules import sd_models, shared, devices
 from scripts.mbw_util.preset_weights import PresetWeights
 import torch
 from natsort import natsorted
@@ -21,8 +21,12 @@ class UNetStateManager(object):
         self.modelA_state_dict_by_blocks = []
         self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
         self.modelB_state_dict = None
+        self.unet_block_module_list = []
+        self.unet_block_module_list = [*self.torch_unet.input_blocks, self.torch_unet.middle_block, self.torch_unet.out, *self.torch_unet.output_blocks, self.torch_unet.time_embed]
 
-    def load_modelB(self, modelB_path, *current_weights):
+
+
+    def load_modelB(self, modelB_path, current_weights):
         model_info = sd_models.get_closet_checkpoint_match(modelB_path)
         checkpoint_file = model_info.filename
         sd_model_hash = model_info.hash
@@ -32,11 +36,27 @@ class UNetStateManager(object):
             # use checkpoint cache
             print(f"Loading weights [{sd_model_hash}] from cache")
             self.modelB_state_dict = sd_models.checkpoints_loaded[model_info]
-        self.modelB_state_dict = self.filter_unet_state_dict(sd_models.read_state_dict(checkpoint_file))
+        device = devices.get_cuda_device_string() if torch.cuda.is_available() else "cpu"
+        self.modelB_state_dict = self.filter_unet_state_dict(sd_models.read_state_dict(checkpoint_file, map_location=device))
+        if len(self.modelA_state_dict) != len(self.modelB_state_dict):
+            print('modelA and modelB state dict have different length, aborting')
+            return
         self.modelB_state_dict_by_blocks = []
         self.map_blocks(self.modelB_state_dict, self.modelB_state_dict_by_blocks)
+        # verify self.modelA_state_dict and self.modelB_state_dict have same structure
+        self.model_state_apply(current_weights)
 
         print('model B loaded')
+
+    def model_state_apply(self, current_weights):
+        for i in range(27):
+            cur_block_state_dict = {}
+            for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
+                curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
+                cur_block_state_dict[cur_layer_key] = curlayer_tensor
+            self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
+
+
 
     # filter input_dict to include only keys starting with 'model.diffusion_model'
     def filter_unet_state_dict(self, input_dict):
@@ -49,9 +69,6 @@ class UNetStateManager(object):
 
         return filtered_dict
 
-
-
-        
     def map_blocks(self, model_state_dict_input, model_state_dict_by_blocks):
         if model_state_dict_by_blocks:
             print('mapping to non empty list')
@@ -152,6 +169,9 @@ class Script(scripts.Script):
                     model_B = gr.Dropdown(label="Model B", choices=sd_models.checkpoint_tiles())
                     txt_model_O = gr.Text(label="Output Model Name")
                 with gr.Row():
+                    sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0.5)
+                    sl_OUT = gr.Slider(label="OUT", minimum=0, maximum=1, step=0.01, value=0.5)
+                with gr.Row():
                     with gr.Column(min_width=100):
                         sl_IN_00 = gr.Slider(label="IN00", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_IN_01 = gr.Slider(label="IN01", minimum=0, maximum=1, step=0.01, value=0.5)
@@ -193,18 +213,18 @@ class Script(scripts.Script):
                         sl_OUT_01 = gr.Slider(label="OUT01", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_OUT_00 = gr.Slider(label="OUT00", minimum=0, maximum=1, step=0.01, value=0.5)
 
-            sl_IN = [
+            sl_INPUT = [
                 sl_IN_00, sl_IN_01, sl_IN_02, sl_IN_03, sl_IN_04, sl_IN_05,
                 sl_IN_06, sl_IN_07, sl_IN_08, sl_IN_09, sl_IN_10, sl_IN_11]
             sl_MID = [sl_M_00]
-            sl_OUT = [
+            sl_OUTPUT = [
                 sl_OUT_00, sl_OUT_01, sl_OUT_02, sl_OUT_03, sl_OUT_04, sl_OUT_05,
                 sl_OUT_06, sl_OUT_07, sl_OUT_08, sl_OUT_09, sl_OUT_10, sl_OUT_11]
-            sl_ALL = [*sl_IN, *sl_MID, *sl_OUT]
+            sl_ALL = [*sl_INPUT, *sl_MID, sl_OUT, *sl_OUTPUT, sl_TIME_EMBED]
 
             def handle_modelB_load(modelB, *slALL):
                 if model_B == 'None':
                     return
-                shared.UNetBManager.load_modelB(modelB)
+                shared.UNetBManager.load_modelB(modelB, slALL)
                 pass
-            model_B.change(fn=handle_modelB_load, inputs=[model_B,*sl_ALL], outputs=None)
+            model_B.change(fn=handle_modelB_load, inputs=[model_B, *sl_ALL], outputs=None)

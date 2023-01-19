@@ -1,24 +1,122 @@
 import modules.scripts as scripts
 import gradio as gr
+
+from ldm.modules.diffusionmodules.openaimodel import UNetModel
 from modules import sd_models, shared
 from scripts.mbw_util.preset_weights import PresetWeights
 import torch
+from natsort import natsorted
 
 presetWeights = PresetWeights()
 
+shared.UNetBManager = None
 
-class UNetBlockManager(object):
-    def __init__(self, org_unet: torch.nn.Module):
+
+class UNetStateManager(object):
+    def __init__(self, org_unet: UNetModel):
         super().__init__()
+        self.modelB_state_dict_by_blocks = []
         self.torch_unet = org_unet
-        self.modelA_block_weights = []
+        self.modelA_state_dict = org_unet.state_dict()
+        self.modelA_state_dict_by_blocks = []
+        self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+        self.modelB_state_dict = None
+
+    def load_modelB(self, modelB_path, *current_weights):
+        model_info = sd_models.get_closet_checkpoint_match(modelB_path)
+        checkpoint_file = model_info.filename
+        sd_model_hash = model_info.hash
+        cache_enabled = shared.opts.sd_checkpoint_cache > 0
+
+        if cache_enabled and model_info in sd_models.checkpoints_loaded:
+            # use checkpoint cache
+            print(f"Loading weights [{sd_model_hash}] from cache")
+            self.modelB_state_dict = sd_models.checkpoints_loaded[model_info]
+        self.modelB_state_dict = self.filter_unet_state_dict(sd_models.read_state_dict(checkpoint_file))
+        self.modelB_state_dict_by_blocks = []
+        self.map_blocks(self.modelB_state_dict, self.modelB_state_dict_by_blocks)
+
+        print('model B loaded')
+
+    # filter input_dict to include only keys starting with 'model.diffusion_model'
+    def filter_unet_state_dict(self, input_dict):
+        filtered_dict = {}
+        for key, value in input_dict.items():
+            if key.startswith('model.diffusion_model'):
+                filtered_dict[key[22:]] = value
+        filtered_dict_keys = natsorted(filtered_dict.keys())
+        filtered_dict = {k: filtered_dict[k] for k in filtered_dict_keys}
+
+        return filtered_dict
+
+
+
+        
+    def map_blocks(self, model_state_dict_input, model_state_dict_by_blocks):
+        if model_state_dict_by_blocks:
+            print('mapping to non empty list')
+            return
+        model_state_dict_sorted_keys = natsorted(model_state_dict_input.keys())
+        # sort model_state_dict by model_state_dict_sorted_keys
+        model_state_dict = {k: model_state_dict_input[k] for k in model_state_dict_sorted_keys}
+
+        known_block_prefixes = [
+            'input_blocks.0.',
+            'input_blocks.1.',
+            'input_blocks.2.',
+            'input_blocks.3.',
+            'input_blocks.4.',
+            'input_blocks.5.',
+            'input_blocks.6.',
+            'input_blocks.7.',
+            'input_blocks.8.',
+            'input_blocks.9.',
+            'input_blocks.10.',
+            'input_blocks.11.',
+            'middle_block.',
+            'out.',
+            'output_blocks.0.',
+            'output_blocks.1.',
+            'output_blocks.2.',
+            'output_blocks.3.',
+            'output_blocks.4.',
+            'output_blocks.5.',
+            'output_blocks.6.',
+            'output_blocks.7.',
+            'output_blocks.8.',
+            'output_blocks.9.',
+            'output_blocks.10.',
+            'output_blocks.11.',
+            'time_embed.'
+        ]
+        current_block_index = 0
+        processing_block_dict = {}
+        for key in model_state_dict:
+            # print(key)
+            if not key.startswith(known_block_prefixes[current_block_index]):
+                if not key.startswith(known_block_prefixes[current_block_index+1]):
+                    print(
+                        f"{key} in statedict after block {known_block_prefixes[current_block_index]}, possible UNet structure deviation"
+                    )
+                    continue
+                else:
+                    model_state_dict_by_blocks.append(processing_block_dict)
+                    processing_block_dict = {}
+                    current_block_index += 1
+            block_local_key = key[len(known_block_prefixes[current_block_index]):]
+            processing_block_dict[block_local_key] = model_state_dict[key]
+
+        model_state_dict_by_blocks.append(processing_block_dict)
+        print('mapping complete')
+        return
 
 
 class Script(scripts.Script):
     def __init__(self) -> None:
         super().__init__()
+        if shared.UNetBManager is None:
+            shared.UNetBManager = UNetStateManager(shared.sd_model.model.diffusion_model)
         # getting reference for model A
-        self.model_A = shared.sd_model
 
     def title(self):
         return "Runtime block merging for UNet"
@@ -36,8 +134,7 @@ class Script(scripts.Script):
                                                        choices=presetWeights.get_preset_name_list())
                         txt_block_weight = gr.Text(label="Weight values",
                                                    placeholder="Put weight sets. float number x 25")
-                        btn_apply_block_weithg_from_txt = gr.Button(value="Apply block weight from text",
-                                                                    variant="primary")
+                        btn_apply_block_weithg_from_txt = gr.Button(value="Apply block weight from text")
                         with gr.Row():
                             sl_base_alpha = gr.Slider(label="base_alpha", minimum=0, maximum=1, step=0.01, value=0)
                             chk_verbose_mbw = gr.Checkbox(label="verbose console output", value=False)
@@ -103,3 +200,11 @@ class Script(scripts.Script):
             sl_OUT = [
                 sl_OUT_00, sl_OUT_01, sl_OUT_02, sl_OUT_03, sl_OUT_04, sl_OUT_05,
                 sl_OUT_06, sl_OUT_07, sl_OUT_08, sl_OUT_09, sl_OUT_10, sl_OUT_11]
+            sl_ALL = [*sl_IN, *sl_MID, *sl_OUT]
+
+            def handle_modelB_load(modelB, *slALL):
+                if model_B == 'None':
+                    return
+                shared.UNetBManager.load_modelB(modelB)
+                pass
+            model_B.change(fn=handle_modelB_load, inputs=[model_B,*sl_ALL], outputs=None)

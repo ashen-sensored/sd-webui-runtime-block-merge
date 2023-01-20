@@ -272,6 +272,8 @@ class Script(scripts.Script):
                 with gr.Row():
                     # model_A = gr.Dropdown(label="Model A", choices=sd_models.checkpoint_tiles())
                     model_B = gr.Dropdown(label="Model B", choices=sd_models.checkpoint_tiles())
+                    refresh_button = gr.Button(variant='tool', value='\U0001f504', elem_id='rbm_modelb_refresh')
+
                     # txt_model_O = gr.Text(label="Output Model Name")
                 with gr.Row():
                     sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0.5)
@@ -468,6 +470,13 @@ class Script(scripts.Script):
                 return old_config_str
 
             config_paste_button.click(fn=on_config_paste, inputs=[*sl_ALL], outputs=[weight_command_textbox])
+            def refresh_modelB_dropdown():
+                return gr.update(choices=sd_models.checkpoint_tiles())
+            refresh_button.click(
+                        fn=refresh_modelB_dropdown,
+                        inputs=None,
+                        outputs=[model_B]
+            )
 
             # process_script_params.append(hidden_title)
             process_script_params.extend(sl_ALL_nat)

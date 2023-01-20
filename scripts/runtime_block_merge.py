@@ -79,7 +79,7 @@ class UNetStateManager(object):
             # use checkpoint cache
             print(f"Loading weights [{sd_model_hash}] from cache")
             self.modelB_state_dict = sd_models.checkpoints_loaded[model_info]
-        device = devices.get_cuda_device_string() if torch.cuda.is_available() else "cpu"
+        device = devices.get_cuda_device_string() if (torch.cuda.is_available() and not shared.cmd_opts.lowvram) else "cpu"
 
         if self.modelB_state_dict:
             # orig_modelB_state_dict_keys = list(self.modelB_state_dict.keys())

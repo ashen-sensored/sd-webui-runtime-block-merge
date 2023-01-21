@@ -231,7 +231,6 @@ class Script(scripts.Script):
 
             shared.opts.onchange("sd_model_checkpoint",
                                  wrap_queued_call(reload_modelA_checkpoint), call=False)
-        # getting reference for model A
 
     def title(self):
         return "Runtime block merging for UNet"

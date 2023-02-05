@@ -106,7 +106,17 @@ class UNetStateManager(object):
         for i in range(27):
             cur_block_state_dict = {}
             for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
-                curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype), current_weights[i])
+                try:
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype), current_weights[i])
+                except RuntimeError:
+                    # self.modelB_state_dict_by_blocks[i][cur_layer_key] = self.modelB_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                    self.modelA_state_dict_by_blocks[i][cur_layer_key] = self.modelA_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype),
+                                                 current_weights[i])
+
+
+
                 cur_block_state_dict[cur_layer_key] = curlayer_tensor
             self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights

@@ -26,7 +26,7 @@ class UNetStateManager(object):
         self.modelA_state_dict_by_blocks = []
         # self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
         self.modelB_state_dict = None
-        self.unet_block_module_list = []
+        # self.unet_block_module_list = []
         self.unet_block_module_list = [*self.torch_unet.input_blocks, self.torch_unet.middle_block, self.torch_unet.out, *self.torch_unet.output_blocks, self.torch_unet.time_embed]
         self.applied_weights = [0] * 27
         # self.gui_weights = [0.5] * 27
@@ -38,12 +38,13 @@ class UNetStateManager(object):
     #     self.gui_weights = current_weights
 
     def reload_modelA(self):
-
-        if self.modelA_path == shared.sd_model.sd_model_checkpoint:
-            return
-        self.modelA_path = shared.sd_model.sd_model_checkpoint
         if not self.enabled:
             return
+
+        if self.modelA_path == shared.sd_model.sd_model_checkpoint and self.modelA_state_dict is not None:
+            return
+        self.modelA_path = shared.sd_model.sd_model_checkpoint
+
         del self.modelA_state_dict_by_blocks
         self.modelA_state_dict_by_blocks = []
         # orig_modelA_state_dict_keys = list(self.modelA_state_dict.keys())
@@ -127,7 +128,8 @@ class UNetStateManager(object):
         modelB_info = sd_models.get_closet_checkpoint_match(current_model_B)
         checkpoint_file_B = modelB_info.filename
         if checkpoint_file_B != self.modelB_path:
-            print('model B changed, shouldn\'t happenm ')
+            print('model B changed, shouldn\'t happen')
+            self.load_modelB(current_model_B, current_weights)
             return
         if self.applied_weights == current_weights:
             return
@@ -225,6 +227,26 @@ class UNetStateManager(object):
         print('mapping complete')
         return
 
+    def restore_original_unet(self):
+        self.torch_unet.load_state_dict(self.modelA_state_dict)
+        return
+
+
+    def unload_all(self):
+        self.modelA_path = ''
+        self.modelB_path = ''
+        self.applied_weights = [0.0]*27
+        del self.modelA_state_dict
+        self.modelA_state_dict = None
+        del self.modelA_state_dict_by_blocks
+        self.modelA_state_dict_by_blocks = []
+        del self.modelB_state_dict
+        self.modelB_state_dict = None
+        del self.modelB_state_dict_by_blocks
+        self.modelB_state_dict_by_blocks = []
+        # self.unet_block_module_list = []
+        self.enabled = False
+
 
 class Script(scripts.Script):
     def __init__(self) -> None:
@@ -253,7 +275,9 @@ class Script(scripts.Script):
         with gr.Accordion('Runtime Block Merge', open=False):
             hidden_title = gr.Textbox(label='Runtime Block Merge Title', value='Runtime Block Merge',
                                       visible=False, interactive=False)
-            # enabled = gr.Checkbox(label='Enable', value=False)
+            with gr.Row():
+                enabled = gr.Checkbox(label='Enable', value=False, interactive=False)
+                unload_button = gr.Button(value='Unload and Disable', elem_id="rbm_unload")
             experimental_range_checkbox = gr.Checkbox(label='Enable Experimental Range', value=False)
             with gr.Column():
                 with gr.Row():
@@ -285,8 +309,8 @@ class Script(scripts.Script):
 
                     # txt_model_O = gr.Text(label="Output Model Name")
                 with gr.Row():
-                    sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0.5)
-                    sl_OUT = gr.Slider(label="OUT", minimum=0, maximum=1, step=0.01, value=0.5)
+                    sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0)
+                    sl_OUT = gr.Slider(label="OUT", minimum=0, maximum=1, step=0.01, value=0)
                 with gr.Row():
                     with gr.Column(min_width=100):
                         sl_IN_00 = gr.Slider(label="IN00", minimum=0, maximum=1, step=0.01, value=0.5)
@@ -343,12 +367,17 @@ class Script(scripts.Script):
 
                 load_flag = shared.UNetBManager.load_modelB(modelB, slALL)
                 if load_flag:
-                    return modelB
+                    return modelB, True
                 else:
-                    return None
+                    return None, False
+
+            def handle_unload():
+                shared.UNetBManager.restore_original_unet()
+                shared.UNetBManager.unload_all()
+                return None, False
 
             def handle_weight_change(*slALL):
-                # convert float list to string
+                # convert float list to string+
                 slALL_str = [str(sl) for sl in slALL]
                 old_config_str = ','.join(slALL_str[:25])
                 return old_config_str
@@ -356,7 +385,8 @@ class Script(scripts.Script):
             # for slider in sl_ALL:
             #     # slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=sl_ALL)
             #     slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=[weight_config_textbox_readonly])
-            model_B.change(fn=handle_modelB_load, inputs=[model_B, *sl_ALL_nat], outputs=[model_B])
+            model_B.change(fn=handle_modelB_load, inputs=[model_B, *sl_ALL_nat], outputs=[model_B, enabled])
+            unload_button.click(fn=handle_unload, inputs=[], outputs=[model_B, enabled])
 
 
 
@@ -490,9 +520,13 @@ class Script(scripts.Script):
             # process_script_params.append(hidden_title)
             process_script_params.extend(sl_ALL_nat)
             process_script_params.append(model_B)
+            process_script_params.append(enabled)
         return process_script_params
 
     def process(self, p, *args):
         gui_weights = args[:27]
         modelB = args[27]
+        enabled = args[28]
+        if not enabled:
+            return
         shared.UNetBManager.model_state_apply_modified_blocks(gui_weights, modelB)

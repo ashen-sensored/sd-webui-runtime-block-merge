@@ -1,6 +1,7 @@
 import copy
 import itertools
 import json
+from datetime import datetime
 
 import modules.scripts as scripts
 import gradio as gr
@@ -11,10 +12,42 @@ from scripts.mbw_util.preset_weights import PresetWeights
 import torch
 from natsort import natsorted
 
+from pathlib import Path
+import safetensors.torch
+
 presetWeights = PresetWeights()
 
 shared.UNetBManager = None
 
+known_block_prefixes = [
+    'input_blocks.0.',
+    'input_blocks.1.',
+    'input_blocks.2.',
+    'input_blocks.3.',
+    'input_blocks.4.',
+    'input_blocks.5.',
+    'input_blocks.6.',
+    'input_blocks.7.',
+    'input_blocks.8.',
+    'input_blocks.9.',
+    'input_blocks.10.',
+    'input_blocks.11.',
+    'middle_block.',
+    'out.',
+    'output_blocks.0.',
+    'output_blocks.1.',
+    'output_blocks.2.',
+    'output_blocks.3.',
+    'output_blocks.4.',
+    'output_blocks.5.',
+    'output_blocks.6.',
+    'output_blocks.7.',
+    'output_blocks.8.',
+    'output_blocks.9.',
+    'output_blocks.10.',
+    'output_blocks.11.',
+    'time_embed.'
+]
 
 class UNetStateManager(object):
     def __init__(self, org_unet: UNetModel):
@@ -165,6 +198,25 @@ class UNetStateManager(object):
             self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights
 
+    def model_state_construct(self, current_weights):
+        precision_dtype = torch.float32 if self.modelA_dtype == torch.float32 or self.modelB_dtype == torch.float32 else torch.float16
+        result_state_dict = {}
+        for i in range(27):
+            cur_block_state_dict = {}
+            for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
+                if precision_dtype == torch.float32:
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                 current_weights[i])
+                else:
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
+
+                result_state_dict[known_block_prefixes[i] + cur_layer_key] = curlayer_tensor
+        return result_state_dict
+
+
+
     def model_state_apply_modified_blocks(self, current_weights, current_model_B):
         if not self.enabled:
             return
@@ -195,6 +247,9 @@ class UNetStateManager(object):
                     cur_block_state_dict[cur_layer_key] = curlayer_tensor
                 self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights
+
+
+
 
     # diff current_weights and self.applied_weights, apply only the difference
     def model_state_apply_block(self, current_weights):
@@ -232,35 +287,7 @@ class UNetStateManager(object):
         # sort model_state_dict by model_state_dict_sorted_keys
         model_state_dict = {k: model_state_dict_input[k] for k in model_state_dict_sorted_keys}
 
-        known_block_prefixes = [
-            'input_blocks.0.',
-            'input_blocks.1.',
-            'input_blocks.2.',
-            'input_blocks.3.',
-            'input_blocks.4.',
-            'input_blocks.5.',
-            'input_blocks.6.',
-            'input_blocks.7.',
-            'input_blocks.8.',
-            'input_blocks.9.',
-            'input_blocks.10.',
-            'input_blocks.11.',
-            'middle_block.',
-            'out.',
-            'output_blocks.0.',
-            'output_blocks.1.',
-            'output_blocks.2.',
-            'output_blocks.3.',
-            'output_blocks.4.',
-            'output_blocks.5.',
-            'output_blocks.6.',
-            'output_blocks.7.',
-            'output_blocks.8.',
-            'output_blocks.9.',
-            'output_blocks.10.',
-            'output_blocks.11.',
-            'time_embed.'
-        ]
+
         current_block_index = 0
         processing_block_dict = {}
         for key in model_state_dict:
@@ -331,9 +358,9 @@ class Script(scripts.Script):
                                       visible=False, interactive=False)
             with gr.Row():
                 enabled = gr.Checkbox(label='Enable', value=False, interactive=False)
-                unload_button = gr.Button(value='Unload and Disable', elem_id="rbm_unload")
+                unload_button = gr.Button(value='Unload and Disable', elem_id="rbm_unload", visible=False)
             experimental_range_checkbox = gr.Checkbox(label='Enable Experimental Range', value=False)
-            force_cpu_checkbox = gr.Checkbox(label='Force CPU', value=False, interactive=True)
+            force_cpu_checkbox = gr.Checkbox(label='Force CPU (Max Precision)', value=True, interactive=True)
             with gr.Column():
                 with gr.Row():
                     with gr.Column():
@@ -428,14 +455,14 @@ class Script(scripts.Script):
 
                 load_flag = shared.UNetBManager.load_modelB(modelB, force_cpu_checkbox, slALL)
                 if load_flag:
-                    return modelB, True, gr.update(interactive=False)
+                    return modelB, True, gr.update(interactive=False), gr.update(visible=True), gr.update(visible=True)
                 else:
-                    return None, False, gr.update(interactive=True)
+                    return None, False, gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False)
 
             def handle_unload():
                 shared.UNetBManager.restore_original_unet()
                 shared.UNetBManager.unload_all()
-                return None, False, gr.update(interactive=True)
+                return None, False, gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False)
 
             def handle_weight_change(*slALL):
                 # convert float list to string+
@@ -446,9 +473,7 @@ class Script(scripts.Script):
             # for slider in sl_ALL:
             #     # slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=sl_ALL)
             #     slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=[weight_config_textbox_readonly])
-            model_B.change(fn=handle_modelB_load, inputs=[model_B, force_cpu_checkbox, *sl_ALL_nat],
-                           outputs=[model_B, enabled, force_cpu_checkbox])
-            unload_button.click(fn=handle_unload, inputs=[], outputs=[model_B, enabled, force_cpu_checkbox])
+
 
             def on_weight_command_submit(command_str, *current_weights):
                 weight_list = parse_weight_str_to_list(command_str, list(current_weights))
@@ -584,6 +609,98 @@ class Script(scripts.Script):
             process_script_params.extend(sl_ALL_nat)
             process_script_params.append(model_B)
             process_script_params.append(enabled)
+
+            with gr.Row():
+                output_mode_radio = gr.Radio(label="Output Mode",choices=["Max Precision", "Runtime Snapshot"],
+                                             value="Max Precision", type="value", interactive=True)
+                position_id_fix_radio = gr.Radio(label="Skip/Reset CLIP position_ids",
+                                                 choices=["Keep Original", "Fix"], value="Keep Original", type="value", interactive=True)
+
+                output_format_radio = gr.Radio(label="Output Format",
+                                               choices=[".ckpt", ".safetensors"], value=".ckpt", type="value",
+                                               interactive=True)
+            with gr.Row():
+                output_recipe_checkbox = gr.Checkbox(label="Output Recipe", value=True, interactive=True)
+
+
+            # with gr.Row():
+            #     save_snapshot_checkbox = gr.Checkbox(label="Save Snapshot", value=False)
+            with gr.Row():
+                save_checkpoint_name_textbox = gr.Textbox(label="New Checkpoint Name")
+                save_checkpoint_button = gr.Button(value="Save Runtime Checkpoint", elem_id="mbw_save_checkpoint_button", variant='primary', interactive=False, visible=False, )
+
+            def on_save_checkpoint(output_mode_radio, position_id_fix_radio, output_format_radio, save_checkpoint_name, output_recipe_checkbox, *weights,
+                                   ):
+                current_weights_nat = weights[:27]
+
+                weights_output_recipe = weights[27:]
+                if not save_checkpoint_name:
+                    # current timestamp
+                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    save_checkpoint_name = f"mbw_{timestamp_str}"
+                save_checkpoint_namewext = save_checkpoint_name + output_format_radio
+                loaded_sd_model_path = Path(shared.sd_model.sd_model_checkpoint)
+                model_ext = loaded_sd_model_path.suffix
+                if model_ext == '.ckpt':
+
+                    model_A_raw_state_dict = torch.load(shared.sd_model.sd_model_checkpoint, map_location='cpu')
+                    if 'state_dict' in model_A_raw_state_dict:
+                        model_A_raw_state_dict = model_A_raw_state_dict['state_dict']
+                elif model_ext == '.safetensors':
+                    model_A_raw_state_dict = safetensors.torch.load_file(shared.sd_model.sd_model_checkpoint, device="cpu")
+                save_checkpoint_path = Path(shared.sd_model.sd_model_checkpoint).parent / save_checkpoint_namewext
+
+                if output_mode_radio == 'Runtime Snapshot':
+                    snapshot_state_dict = shared.sd_model.model.diffusion_model.state_dict()
+
+                elif output_mode_radio == 'Max Precision':
+                    snapshot_state_dict = shared.UNetBManager.model_state_construct(current_weights_nat)
+
+                snapshot_state_dict_prefixed = {'model.diffusion_model.' + key: value for key, value in
+                                                snapshot_state_dict.items()}
+                if not set(snapshot_state_dict_prefixed.keys()).issubset(set(model_A_raw_state_dict.keys())):
+                    print(
+                        'warning: snapshot state_dict keys are not subset of model A state_dict keys, possible structural deviation')
+
+                combined_state_dict = {**model_A_raw_state_dict, **snapshot_state_dict_prefixed}
+                if position_id_fix_radio == 'Fix':
+                    combined_state_dict['cond_stage_model.transformer.text_model.embeddings.position_ids'] = torch.tensor([list(range(77))], dtype=torch.int)
+
+                if output_format_radio == '.ckpt':
+                    state_dict_save = {'state_dict': combined_state_dict}
+                    torch.save(state_dict_save, save_checkpoint_path)
+                elif output_format_radio == '.safetensors':
+                    safetensors.torch.save_file(combined_state_dict, save_checkpoint_path)
+
+                if output_recipe_checkbox:
+                    recipe_path = Path(shared.sd_model.sd_model_checkpoint).parent / f"{save_checkpoint_name}.recipe.txt"
+                    with open(recipe_path, 'w') as f:
+                        f.write(f"modelA={shared.sd_model.sd_model_checkpoint}\n")
+                        f.write(f"modelB={shared.UNetBManager.modelB_path}\n")
+                        f.write(f"position_id_fix={position_id_fix_radio}\n")
+                        f.write(f"output_mode={output_mode_radio}\n")
+                        f.write(f"{','.join([str(w) for w in weights_output_recipe])}\n")
+
+                return gr.update(value=save_checkpoint_name)
+
+
+            def on_change_force_cpu(force_cpu_flag):
+                if not force_cpu_flag:
+                    return gr.update(choices=["Runtime Snapshot"], value="Runtime Snapshot")
+                else:
+                    return gr.update(choices=["Max Precision", "Runtime Snapshot"], value="Max Precision")
+
+
+            save_checkpoint_button.click(
+                fn=on_save_checkpoint,
+                inputs=[output_mode_radio, position_id_fix_radio, output_format_radio, save_checkpoint_name_textbox, output_recipe_checkbox, *sl_ALL_nat, *sl_ALL],
+                outputs=[save_checkpoint_name_textbox],
+                show_progress=True
+            )
+            force_cpu_checkbox.change(fn=on_change_force_cpu, inputs=[force_cpu_checkbox], outputs=[output_mode_radio])
+            model_B.change(fn=handle_modelB_load, inputs=[model_B, force_cpu_checkbox, *sl_ALL_nat],
+                           outputs=[model_B, enabled, force_cpu_checkbox, save_checkpoint_button, unload_button])
+            unload_button.click(fn=handle_unload, inputs=[], outputs=[model_B, enabled, force_cpu_checkbox, save_checkpoint_button, unload_button])
 
         return process_script_params
 

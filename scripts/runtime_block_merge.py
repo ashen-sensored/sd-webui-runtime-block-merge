@@ -183,9 +183,14 @@ class UNetStateManager(object):
                     #                                  self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
                     #                                  current_weights[i]).to(self.dtype)
                 else:
+                    if self.force_cpu:
+                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                     self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                     current_weights[i]).to(self.dtype)
+                    else:
                     # try:
-                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
-                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
+                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                     self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
                     # except RuntimeError:
                     #     # self.modelB_state_dict_by_blocks[i][cur_layer_key] = self.modelB_state_dict_by_blocks[i][cur_layer_key].to('cpu')
                     #     self.modelA_state_dict_by_blocks[i][cur_layer_key] = self.modelA_state_dict_by_blocks[i][cur_layer_key].to('cpu')
@@ -209,7 +214,12 @@ class UNetStateManager(object):
                                                  self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
                                                  current_weights[i])
                 else:
-                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                    if self.force_cpu:
+                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                     self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                     current_weights[i]).to(torch.float16)
+                    else:
+                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
                                                  self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
 
                 result_state_dict[known_block_prefixes[i] + cur_layer_key] = curlayer_tensor

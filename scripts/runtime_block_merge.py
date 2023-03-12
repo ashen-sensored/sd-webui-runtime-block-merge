@@ -1,4 +1,5 @@
 import copy
+import itertools
 import json
 
 import modules.scripts as scripts
@@ -27,12 +28,17 @@ class UNetStateManager(object):
         # self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
         self.modelB_state_dict = None
         # self.unet_block_module_list = []
-        self.unet_block_module_list = [*self.torch_unet.input_blocks, self.torch_unet.middle_block, self.torch_unet.out, *self.torch_unet.output_blocks, self.torch_unet.time_embed]
+        self.unet_block_module_list = [*self.torch_unet.input_blocks, self.torch_unet.middle_block, self.torch_unet.out,
+                                       *self.torch_unet.output_blocks, self.torch_unet.time_embed]
         self.applied_weights = [0] * 27
         # self.gui_weights = [0.5] * 27
         self.enabled = False
         self.modelA_path = shared.sd_model.sd_model_checkpoint
         self.modelB_path = ''
+        self.force_cpu = False
+        self.modelA_dtype = None
+        self.modelB_dtype = None
+        self.device = devices.get_cuda_device_string() if (torch.cuda.is_available() and not shared.cmd_opts.lowvram) else "cpu"
 
     # def set_gui_weights(self, current_weights):
     #     self.gui_weights = current_weights
@@ -52,35 +58,55 @@ class UNetStateManager(object):
         #     del self.modelA_state_dict[key]
         del self.modelA_state_dict
         torch.cuda.empty_cache()
-        self.modelA_state_dict = copy.deepcopy(self.torch_unet.state_dict())
-        self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+        if self.force_cpu:
+            self.modelA_state_dict = self.filter_unet_state_dict(
+                sd_models.read_state_dict(self.modelA_path, map_location="cpu"))
+            self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+            self.modelA_dtype = itertools.islice(self.modelA_state_dict.items(), 1).__next__()[1].dtype
+        else:
+            self.modelA_state_dict = copy.deepcopy(self.torch_unet.state_dict())
+            self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
         # if self.enabled:
-            # self.model_state_apply(self.gui_weights)
+        # self.model_state_apply(self.gui_weights)
         self.model_state_apply(self.applied_weights)
         print('model A reloaded')
 
-
-    def load_modelB(self, modelB_path, current_weights):
+    def load_modelB(self, modelB_path, force_cpu_checkbox, current_weights):
+        self.force_cpu = force_cpu_checkbox
+        self.device = devices.get_cuda_device_string() if (torch.cuda.is_available() and not shared.cmd_opts.lowvram) else "cpu"
+        if self.force_cpu:
+            self.device = "cpu"
         model_info = sd_models.get_closet_checkpoint_match(modelB_path)
         checkpoint_file = model_info.filename
         self.modelB_path = checkpoint_file
+
+
         if self.modelA_path == checkpoint_file:
             if not self.modelB_state_dict:
                 self.enabled = False
             # self.gui_weights = current_weights
             return False
+
         # move initialization of model A to here
         if not self.modelA_state_dict:
-            self.modelA_state_dict = copy.deepcopy(self.torch_unet.state_dict())
-            self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+            if self.force_cpu:
+                self.modelA_path = shared.sd_model.sd_model_checkpoint
+                self.modelA_state_dict = self.filter_unet_state_dict(
+                    sd_models.read_state_dict(self.modelA_path, map_location="cpu"))
+                self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+
+            else:
+                self.modelA_state_dict = copy.deepcopy(self.torch_unet.state_dict())
+                self.map_blocks(self.modelA_state_dict, self.modelA_state_dict_by_blocks)
+                # self.modelA_dtype = self.torch_unet.dtype
+            self.modelA_dtype = itertools.islice(self.modelA_state_dict.items(), 1).__next__()[1].dtype
         sd_model_hash = model_info.hash
         cache_enabled = shared.opts.sd_checkpoint_cache > 0
 
-        if cache_enabled and model_info in sd_models.checkpoints_loaded:
-            # use checkpoint cache
-            print(f"Loading weights [{sd_model_hash}] from cache")
-            self.modelB_state_dict = sd_models.checkpoints_loaded[model_info]
-        device = devices.get_cuda_device_string() if (torch.cuda.is_available() and not shared.cmd_opts.lowvram) else "cpu"
+        # if cache_enabled and model_info in sd_models.checkpoints_loaded:
+        #     # use checkpoint cache
+        #     print(f"Loading weights [{sd_model_hash}] from cache")
+        #     self.modelB_state_dict = sd_models.checkpoints_loaded[model_info]
 
         if self.modelB_state_dict:
             # orig_modelB_state_dict_keys = list(self.modelB_state_dict.keys())
@@ -90,7 +116,9 @@ class UNetStateManager(object):
             del self.modelB_state_dict
             torch.cuda.empty_cache()
         self.modelB_state_dict_by_blocks = []
-        self.modelB_state_dict = self.filter_unet_state_dict(sd_models.read_state_dict(checkpoint_file, map_location=device))
+        self.modelB_state_dict = self.filter_unet_state_dict(
+            sd_models.read_state_dict(checkpoint_file, map_location=self.device))
+        self.modelB_dtype = itertools.islice(self.modelB_state_dict.items(), 1).__next__()[1].dtype
         if len(self.modelA_state_dict) != len(self.modelB_state_dict):
             print('modelA and modelB state dict have different length, aborting')
             return False
@@ -104,20 +132,35 @@ class UNetStateManager(object):
 
     def model_state_apply(self, current_weights):
         # self.gui_weights = current_weights
+        # ensuring maximum precision
+        operation_dtype = torch.float32 if self.modelA_dtype == torch.float32 or self.modelB_dtype == torch.float32 else torch.float16
         for i in range(27):
             cur_block_state_dict = {}
             for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
-                try:
-                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype), current_weights[i])
-                except RuntimeError:
-                    # self.modelB_state_dict_by_blocks[i][cur_layer_key] = self.modelB_state_dict_by_blocks[i][cur_layer_key].to('cpu')
-                    self.modelA_state_dict_by_blocks[i][cur_layer_key] = self.modelA_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                if operation_dtype == torch.float32:
+                    # try:
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                 current_weights[i]).to(self.dtype)
+                    # except RuntimeError:
+                    #     # self.modelB_state_dict_by_blocks[i][cur_layer_key] = self.modelB_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                    #     self.modelA_state_dict_by_blocks[i][cur_layer_key] = self.modelA_state_dict_by_blocks[i][
+                    #         cur_layer_key].to('cpu')
+                    #     curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                    #                                  self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                    #                                  current_weights[i]).to(self.dtype)
+                else:
+                    # try:
                     curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
-                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype),
-                                                 current_weights[i])
-
-
-
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
+                    # except RuntimeError:
+                    #     # self.modelB_state_dict_by_blocks[i][cur_layer_key] = self.modelB_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                    #     self.modelA_state_dict_by_blocks[i][cur_layer_key] = self.modelA_state_dict_by_blocks[i][cur_layer_key].to('cpu')
+                    #     curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                    #                                  self.modelB_state_dict_by_blocks[i][cur_layer_key],
+                    #                                  current_weights[i])
+                if str(shared.device) != self.device:
+                    curlayer_tensor = curlayer_tensor.to(shared.device)
                 cur_block_state_dict[cur_layer_key] = curlayer_tensor
             self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights
@@ -133,11 +176,22 @@ class UNetStateManager(object):
             return
         if self.applied_weights == current_weights:
             return
+        operation_dtype = torch.float32 if self.modelA_dtype == torch.float32 or self.modelB_dtype == torch.float32 else torch.float16
         for i in range(27):
             if current_weights[i] != self.applied_weights[i]:
                 cur_block_state_dict = {}
                 for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
-                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key].to(self.dtype), current_weights[i])
+                    if operation_dtype == torch.float32:
+                        curlayer_tensor = torch.lerp(
+                            self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                            self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                            current_weights[i]).to(self.dtype)
+                    else:
+                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                     self.modelB_state_dict_by_blocks[i][cur_layer_key],
+                                                     current_weights[i])
+                    if str(shared.device) != self.device:
+                        curlayer_tensor = curlayer_tensor.to(shared.device)
                     cur_block_state_dict[cur_layer_key] = curlayer_tensor
                 self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights
@@ -151,7 +205,8 @@ class UNetStateManager(object):
             if current_weights[i] != self.applied_weights[i]:
                 cur_block_state_dict = {}
                 for cur_layer_key in self.modelA_state_dict_by_blocks[i]:
-                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key], self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
+                    curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                 self.modelB_state_dict_by_blocks[i][cur_layer_key], current_weights[i])
                     cur_block_state_dict[cur_layer_key] = curlayer_tensor
                 self.unet_block_module_list[i].load_state_dict(cur_block_state_dict)
         self.applied_weights = current_weights
@@ -211,7 +266,7 @@ class UNetStateManager(object):
         for key in model_state_dict:
             # print(key)
             if not key.startswith(known_block_prefixes[current_block_index]):
-                if not key.startswith(known_block_prefixes[current_block_index+1]):
+                if not key.startswith(known_block_prefixes[current_block_index + 1]):
                     print(
                         f"unknown key {key} in statedict after block {known_block_prefixes[current_block_index]}, possible UNet structure deviation"
                     )
@@ -231,11 +286,10 @@ class UNetStateManager(object):
         self.torch_unet.load_state_dict(self.modelA_state_dict)
         return
 
-
     def unload_all(self):
         self.modelA_path = ''
         self.modelB_path = ''
-        self.applied_weights = [0.0]*27
+        self.applied_weights = [0.0] * 27
         del self.modelA_state_dict
         self.modelA_state_dict = None
         del self.modelA_state_dict_by_blocks
@@ -279,14 +333,17 @@ class Script(scripts.Script):
                 enabled = gr.Checkbox(label='Enable', value=False, interactive=False)
                 unload_button = gr.Button(value='Unload and Disable', elem_id="rbm_unload")
             experimental_range_checkbox = gr.Checkbox(label='Enable Experimental Range', value=False)
+            force_cpu_checkbox = gr.Checkbox(label='Force CPU', value=False, interactive=True)
             with gr.Column():
                 with gr.Row():
                     with gr.Column():
                         dd_preset_weight = gr.Dropdown(label="Preset Weights",
                                                        choices=presetWeights.get_preset_name_list())
-                        config_paste_button = gr.Button(value='Generate Merge Block Weighted Config\u2199\ufe0f', elem_id="rbm_config_paste", title="Paste Current Block Configs Into Weight Command. Useful for copying to \"Merge Block Weighted\" extension")
+                        config_paste_button = gr.Button(value='Generate Merge Block Weighted Config\u2199\ufe0f',
+                                                        elem_id="rbm_config_paste",
+                                                        title="Paste Current Block Configs Into Weight Command. Useful for copying to \"Merge Block Weighted\" extension")
                         weight_command_textbox = gr.Textbox(label="Weight Command",
-                                                      placeholder="Input weight command, then press enter. \nExample: base:0.5, in00:1, out09:0.8, time_embed:0, out:0")
+                                                            placeholder="Input weight command, then press enter. \nExample: base:0.5, in00:1, out09:0.8, time_embed:0, out:0")
                         # weight_config_textbox_readonly = gr.Textbox(label="Weight Config For Merge Block Weighted", interactive=False)
 
                         # btn_apply_block_weight_from_txt = gr.Button(value="Apply block weight from text")
@@ -298,10 +355,10 @@ class Script(scripts.Script):
                         #         with gr.Row():
                         #             chk_save_as_half = gr.Checkbox(label="Save as half", value=False)
                         #             chk_save_as_safetensors = gr.Checkbox(label="Save as safetensors", value=False)
-                            # with gr.Column(scale=4):
-                            #     radio_position_ids = gr.Radio(label="Skip/Reset CLIP position_ids",
-                            #                                   choices=["None", "Skip", "Force Reset"], value="None",
-                            #                                   type="index")
+                        # with gr.Column(scale=4):
+                        #     radio_position_ids = gr.Radio(label="Skip/Reset CLIP position_ids",
+                        #                                   choices=["None", "Skip", "Force Reset"], value="None",
+                        #                                   type="index")
                 with gr.Row():
                     # model_A = gr.Dropdown(label="Model A", choices=sd_models.checkpoint_tiles())
                     model_B = gr.Dropdown(label="Model B", choices=sd_models.checkpoint_tiles())
@@ -363,18 +420,22 @@ class Script(scripts.Script):
             sl_ALL_nat = [*sl_INPUT, *sl_MID, sl_OUT, *sl_OUTPUT, sl_TIME_EMBED]
             sl_ALL = [*sl_INPUT, *sl_MID, *sl_OUTPUT, sl_TIME_EMBED, sl_OUT]
 
-            def handle_modelB_load(modelB, *slALL):
 
-                load_flag = shared.UNetBManager.load_modelB(modelB, slALL)
+
+
+
+            def handle_modelB_load(modelB, force_cpu_checkbox, *slALL):
+
+                load_flag = shared.UNetBManager.load_modelB(modelB, force_cpu_checkbox, slALL)
                 if load_flag:
-                    return modelB, True
+                    return modelB, True, gr.update(interactive=False)
                 else:
-                    return None, False
+                    return None, False, gr.update(interactive=True)
 
             def handle_unload():
                 shared.UNetBManager.restore_original_unet()
                 shared.UNetBManager.unload_all()
-                return None, False
+                return None, False, gr.update(interactive=True)
 
             def handle_weight_change(*slALL):
                 # convert float list to string+
@@ -385,10 +446,9 @@ class Script(scripts.Script):
             # for slider in sl_ALL:
             #     # slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=sl_ALL)
             #     slider.change(fn=handle_weight_change, inputs=sl_ALL, outputs=[weight_config_textbox_readonly])
-            model_B.change(fn=handle_modelB_load, inputs=[model_B, *sl_ALL_nat], outputs=[model_B, enabled])
-            unload_button.click(fn=handle_unload, inputs=[], outputs=[model_B, enabled])
-
-
+            model_B.change(fn=handle_modelB_load, inputs=[model_B, force_cpu_checkbox, *sl_ALL_nat],
+                           outputs=[model_B, enabled, force_cpu_checkbox])
+            unload_button.click(fn=handle_unload, inputs=[], outputs=[model_B, enabled, force_cpu_checkbox])
 
             def on_weight_command_submit(command_str, *current_weights):
                 weight_list = parse_weight_str_to_list(command_str, list(current_weights))
@@ -411,7 +471,8 @@ class Script(scripts.Script):
                     # parse as json
                     weightstr = weightstr.replace(' ', '')
                     cmd_segments = weightstr.split(',')
-                    constructed_json_segments = [f'"{key.upper()}":{value}' for key, value in [x.split(':') for x in cmd_segments]]
+                    constructed_json_segments = [f'"{key.upper()}":{value}' for key, value in
+                                                 [x.split(':') for x in cmd_segments]]
                     constructed_json = '{' + ','.join(constructed_json_segments) + '}'
                     try:
                         parsed_json = json.loads(constructed_json)
@@ -454,7 +515,7 @@ class Script(scripts.Script):
                         if key not in weight_name_map and key not in extra_commands:
                             print(f'invalid key: {key}')
                             return None
-                        if not (isinstance(value, (float,int))) or value < -1 or value > 2:
+                        if not (isinstance(value, (float, int))) or value < -1 or value > 2:
                             print(f'{key} value {value} out of range')
                             return None
 
@@ -500,8 +561,8 @@ class Script(scripts.Script):
                 else:
                     return [gr.update(minimum=0, maximum=1) for _ in sl_ALL]
 
-            experimental_range_checkbox.change(fn=update_slider_range, inputs=[experimental_range_checkbox], outputs=sl_ALL)
-
+            experimental_range_checkbox.change(fn=update_slider_range, inputs=[experimental_range_checkbox],
+                                               outputs=sl_ALL)
 
             def on_config_paste(*current_weights):
                 slALL_str = [str(sl) for sl in current_weights]
@@ -509,18 +570,21 @@ class Script(scripts.Script):
                 return old_config_str
 
             config_paste_button.click(fn=on_config_paste, inputs=[*sl_ALL], outputs=[weight_command_textbox])
+
             def refresh_modelB_dropdown():
                 return gr.update(choices=sd_models.checkpoint_tiles())
+
             refresh_button.click(
-                        fn=refresh_modelB_dropdown,
-                        inputs=None,
-                        outputs=[model_B]
+                fn=refresh_modelB_dropdown,
+                inputs=None,
+                outputs=[model_B]
             )
 
             # process_script_params.append(hidden_title)
             process_script_params.extend(sl_ALL_nat)
             process_script_params.append(model_B)
             process_script_params.append(enabled)
+
         return process_script_params
 
     def process(self, p, *args):

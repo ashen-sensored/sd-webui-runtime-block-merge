@@ -249,9 +249,14 @@ class UNetStateManager(object):
                             self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
                             current_weights[i]).to(self.dtype)
                     else:
-                        curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
-                                                     self.modelB_state_dict_by_blocks[i][cur_layer_key],
-                                                     current_weights[i])
+                        if self.force_cpu:
+                            curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                         self.modelB_state_dict_by_blocks[i][cur_layer_key].to(torch.float32),
+                                                         current_weights[i]).to(torch.float16)
+                        else:
+                            curlayer_tensor = torch.lerp(self.modelA_state_dict_by_blocks[i][cur_layer_key],
+                                                         self.modelB_state_dict_by_blocks[i][cur_layer_key],
+                                                         current_weights[i])
                     if str(shared.device) != self.device:
                         curlayer_tensor = curlayer_tensor.to(shared.device)
                     cur_block_state_dict[cur_layer_key] = curlayer_tensor
@@ -674,7 +679,7 @@ class Script(scripts.Script):
 
                 combined_state_dict = {**model_A_raw_state_dict, **snapshot_state_dict_prefixed}
                 if position_id_fix_radio == 'Fix':
-                    combined_state_dict['cond_stage_model.transformer.text_model.embeddings.position_ids'] = torch.tensor([list(range(77))], dtype=torch.int)
+                    combined_state_dict['cond_stage_model.transformer.text_model.embeddings.position_ids'] = torch.tensor([list(range(77))], dtype=torch.int64)
 
                 if output_format_radio == '.ckpt':
                     state_dict_save = {'state_dict': combined_state_dict}

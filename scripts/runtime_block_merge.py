@@ -50,7 +50,7 @@ known_block_prefixes = [
 ]
 
 class UNetStateManager(object):
-    def __init__(self, org_unet: UNetModel):
+    def __init__(self, org_unet: UNetModel = None):
         super().__init__()
         self.modelB_state_dict_by_blocks = []
         self.torch_unet = org_unet
@@ -348,7 +348,10 @@ class Script(scripts.Script):
     def __init__(self) -> None:
         super().__init__()
         if shared.UNetBManager is None:
-            shared.UNetBManager = UNetStateManager(shared.sd_model.model.diffusion_model)
+            try:
+                shared.UNetBManager = UNetStateManager(shared.sd_model.model.diffusion_model)
+            except AttributeError:
+                shared.UNetBManager = None
             from modules.call_queue import wrap_queued_call
 
             def reload_modelA_checkpoint():
@@ -725,4 +728,6 @@ class Script(scripts.Script):
         enabled = args[28]
         if not enabled:
             return
+        if not shared.UNetBManager:
+            shared.UNetBManager = UNetStateManager(shared.sd_model.model.diffusion_model)
         shared.UNetBManager.model_state_apply_modified_blocks(gui_weights, modelB)

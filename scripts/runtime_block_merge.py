@@ -470,7 +470,8 @@ class Script(scripts.Script):
 
 
             def handle_modelB_load(modelB, force_cpu_checkbox, *slALL):
-
+                if modelB is None:
+                    return None, False, gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False)
                 load_flag = shared.UNetBManager.load_modelB(modelB, force_cpu_checkbox, slALL)
                 if load_flag:
                     return modelB, True, gr.update(interactive=False), gr.update(visible=True), gr.update(visible=True)
@@ -645,7 +646,7 @@ class Script(scripts.Script):
             #     save_snapshot_checkbox = gr.Checkbox(label="Save Snapshot", value=False)
             with gr.Row():
                 save_checkpoint_name_textbox = gr.Textbox(label="New Checkpoint Name")
-                save_checkpoint_button = gr.Button(value="Save Runtime Checkpoint", elem_id="mbw_save_checkpoint_button", variant='primary', interactive=False, visible=False, )
+                save_checkpoint_button = gr.Button(value="Save Runtime Checkpoint", elem_id="mbw_save_checkpoint_button", variant='primary', interactive=True, visible=False, )
 
             def on_save_checkpoint(output_mode_radio, position_id_fix_radio, output_format_radio, save_checkpoint_name, output_recipe_checkbox, *weights,
                                    ):

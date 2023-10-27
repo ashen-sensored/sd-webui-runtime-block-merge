@@ -381,14 +381,23 @@ class Script(scripts.Script):
             force_cpu_checkbox = gr.Checkbox(label='Force CPU (Max Precision)', value=True, interactive=True)
             with gr.Column():
                 with gr.Row():
-                    with gr.Column():
+                    # model_A = gr.Dropdown(label="Model A", choices=sd_models.checkpoint_tiles())
+                    model_B = gr.Dropdown(label="Model B", choices=sd_models.checkpoint_tiles())
+                    refresh_button = gr.Button(variant='tool', value='\U0001f504', elem_id='rbm_modelb_refresh')
+                with gr.Row():
+                    with gr.Column(variant="compact"):
+                        with gr.Row():
+                            weight_command_textbox = gr.Textbox(label="Weight Command", show_copy_button=True,
+                                                            placeholder="Input weight command or comma separated weights, then press enter. \nExample: base:0.5, in00:1, out09:0.8, time_embed:0, out:0")
+                        with gr.Row():
+                            config_copy_button = gr.Button(value='Get Config \u2191\ufe0f',
+                                                        elem_id="rbm_config_copy",
+                                                        title="Copy Current Block Configs Into Weight Command. Useful for copying to \"Merge Block Weighted\" extension")
+                            config_paste_button = gr.Button(value='Set Config \u2193\ufe0f',
+                                                        elem_id="rbm_config_paste",
+                                                        title="Paste Current Block Configs Into Weight Command. Useful for pasting from \"Merge Block Weighted\" extension")
                         dd_preset_weight = gr.Dropdown(label="Preset Weights",
                                                        choices=presetWeights.get_preset_name_list())
-                        config_paste_button = gr.Button(value='Generate Merge Block Weighted Config\u2199\ufe0f',
-                                                        elem_id="rbm_config_paste",
-                                                        title="Paste Current Block Configs Into Weight Command. Useful for copying to \"Merge Block Weighted\" extension")
-                        weight_command_textbox = gr.Textbox(label="Weight Command",
-                                                            placeholder="Input weight command, then press enter. \nExample: base:0.5, in00:1, out09:0.8, time_embed:0, out:0")
                         # weight_config_textbox_readonly = gr.Textbox(label="Weight Config For Merge Block Weighted", interactive=False)
 
                         # btn_apply_block_weight_from_txt = gr.Button(value="Apply block weight from text")
@@ -404,17 +413,15 @@ class Script(scripts.Script):
                         #     radio_position_ids = gr.Radio(label="Skip/Reset CLIP position_ids",
                         #                                   choices=["None", "Skip", "Force Reset"], value="None",
                         #                                   type="index")
-                with gr.Row():
-                    # model_A = gr.Dropdown(label="Model A", choices=sd_models.checkpoint_tiles())
-                    model_B = gr.Dropdown(label="Model B", choices=sd_models.checkpoint_tiles())
-                    refresh_button = gr.Button(variant='tool', value='\U0001f504', elem_id='rbm_modelb_refresh')
 
                     # txt_model_O = gr.Text(label="Output Model Name")
                 with gr.Row():
-                    sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0)
-                    sl_OUT = gr.Slider(label="OUT", minimum=0, maximum=1, step=0.01, value=0)
+                    with gr.Column(scale=2, min_width=100):
+                        sl_TIME_EMBED = gr.Slider(label="TIME_EMBED", minimum=0, maximum=1, step=0.01, value=0)
+                    with gr.Column(scale=2, min_width=100):
+                        sl_OUT = gr.Slider(label="OUT", minimum=0, maximum=1, step=0.01, value=0)
                 with gr.Row():
-                    with gr.Column(min_width=100):
+                    with gr.Column(scale=2, min_width=100):
                         sl_IN_00 = gr.Slider(label="IN00", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_IN_01 = gr.Slider(label="IN01", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_IN_02 = gr.Slider(label="IN02", minimum=0, maximum=1, step=0.01, value=0.5)
@@ -427,21 +434,8 @@ class Script(scripts.Script):
                         sl_IN_09 = gr.Slider(label="IN09", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_IN_10 = gr.Slider(label="IN10", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_IN_11 = gr.Slider(label="IN11", minimum=0, maximum=1, step=0.01, value=0.5)
-                    with gr.Column(min_width=100):
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        gr.Slider(visible=False)
-                        sl_M_00 = gr.Slider(label="M00", minimum=0, maximum=1, step=0.01, value=0.5,
-                                            elem_id="mbw_sl_M00")
-                    with gr.Column(min_width=100):
+
+                    with gr.Column(scale=2, min_width=100):
                         sl_OUT_11 = gr.Slider(label="OUT11", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_OUT_10 = gr.Slider(label="OUT10", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_OUT_09 = gr.Slider(label="OUT09", minimum=0, maximum=1, step=0.01, value=0.5)
@@ -454,6 +448,14 @@ class Script(scripts.Script):
                         sl_OUT_02 = gr.Slider(label="OUT02", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_OUT_01 = gr.Slider(label="OUT01", minimum=0, maximum=1, step=0.01, value=0.5)
                         sl_OUT_00 = gr.Slider(label="OUT00", minimum=0, maximum=1, step=0.01, value=0.5)
+                with gr.Row():
+                    with gr.Column(scale=1, min_width=100):
+                        gr.Slider(visible=False)
+                    with gr.Column(scale=2):
+                        sl_M_00 = gr.Slider(label="M00", minimum=0, maximum=1, step=0.01, value=0.5,
+                                            elem_id="mbw_sl_M00")
+                    with gr.Column(scale=1, min_width=100):
+                        gr.Slider(visible=False)
 
             sl_INPUT = [
                 sl_IN_00, sl_IN_01, sl_IN_02, sl_IN_03, sl_IN_04, sl_IN_05,
@@ -503,11 +505,14 @@ class Script(scripts.Script):
                     weight_list.extend([gr.update(), gr.update()])
                 return weight_list
 
-            weight_command_textbox.submit(
+            weight_command_args = dict(
                 fn=on_weight_command_submit,
                 inputs=[weight_command_textbox, *sl_ALL],
-                outputs=sl_ALL
+                outputs=sl_ALL,
+                show_progress=False,
             )
+            weight_command_textbox.submit(**weight_command_args)
+            config_paste_button.click(**weight_command_args)
 
             def parse_weight_str_to_list(weightstr, current_weights):
                 weightstr = weightstr[:500]
@@ -608,12 +613,12 @@ class Script(scripts.Script):
             experimental_range_checkbox.change(fn=update_slider_range, inputs=[experimental_range_checkbox],
                                                outputs=sl_ALL)
 
-            def on_config_paste(*current_weights):
+            def on_config_copy(*current_weights):
                 slALL_str = [str(sl) for sl in current_weights]
                 old_config_str = ','.join(slALL_str[:25])
                 return old_config_str
 
-            config_paste_button.click(fn=on_config_paste, inputs=[*sl_ALL], outputs=[weight_command_textbox])
+            config_copy_button.click(fn=on_config_copy, inputs=[*sl_ALL], outputs=[weight_command_textbox], show_progress=False)
 
             def refresh_modelB_dropdown():
                 return gr.update(choices=sd_models.checkpoint_tiles())
